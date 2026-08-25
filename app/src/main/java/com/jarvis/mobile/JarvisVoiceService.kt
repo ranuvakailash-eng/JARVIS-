@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -14,363 +15,390 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
-class JarvisVoiceService : Service(), RecognitionListener {
+class JarvisVoiceService : Service() {
 
-    private lateinit var recognizer: SpeechRecognizer
-    private lateinit var recognizerIntent: Intent
-    private lateinit var tts: TextToSpeech
+    private var speechRecognizer: SpeechRecognizer? = null
+    private var textToSpeech: TextToSpeech? = null
 
     private val handler = Handler(Looper.getMainLooper())
 
-    private var commandMode = false
-    private var speaking = false
+    private var listeningForCommand = false
     private var destroyed = false
 
     override fun onCreate() {
         super.onCreate()
 
         createNotificationChannel()
+        startJarvisForeground()
 
-        startForeground(
-            1001,
-            createNotification()
-        )
-
-        tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                tts.language = Locale.UK
-                tts.setSpeechRate(0.95f)
+        textToSpeech = TextToSpeech(this) {
+            if (it == TextToSpeech.SUCCESS) {
+                textToSpeech?.language = Locale.UK
+                textToSpeech?.setSpeechRate(0.9f)
             }
         }
 
-        recognizer =
+        if (SpeechRecognizer.isRecognitionAvailable(this)) {
+            setupSpeechRecognizer()
+            startListening()
+        }
+    }
+
+    private fun setupSpeechRecognizer() {
+
+        speechRecognizer =
             SpeechRecognizer.createSpeechRecognizer(this)
 
-        recognizer.setRecognitionListener(this)
+        speechRecognizer?.setRecognitionListener(
+            object : RecognitionListener {
 
-        recognizerIntent = Intent(
-            RecognizerIntent.ACTION_RECOGNIZE_SPEECH
-        ).apply {
-            putExtra(
-                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-            )
+                override fun onReadyForSpeech(
+                    params: Bundle?
+                ) {
+                }
 
-            putExtra(
-                RecognizerIntent.EXTRA_LANGUAGE,
-                Locale.UK
-            )
+                override fun onBeginningOfSpeech() {
+                }
 
-            putExtra(
-                RecognizerIntent.EXTRA_MAX_RESULTS,
-                3
-            )
+                override fun onRmsChanged(
+                    rmsdB: Float
+                ) {
+                }
 
-            putExtra(
-                RecognizerIntent.EXTRA_PARTIAL_RESULTS,
-                false
-            )
-        }
+                override fun onBufferReceived(
+                    buffer: ByteArray?
+                ) {
+                }
 
-        startStandby()
-    }
+                override fun onEndOfSpeech() {
+                }
 
-    private fun startStandby() {
+                override fun onError(
+                    error: Int
+                ) {
+                    if (!destroyed) {
+                        restartListening()
+                    }
+                }
 
-        if (destroyed || speaking) return
+                override fun onResults(
+                    results: Bundle?
+                ) {
 
-        commandMode = false
+                    if (destroyed) return
 
-        handler.postDelayed({
+                    val list =
+                        results?.getStringArrayList(
+                            SpeechRecognizer.RESULTS_RECOGNITION
+                        )
 
-            if (destroyed || speaking) return@postDelayed
+                    val text =
+                        list?.firstOrNull()
+                            ?.lowercase(Locale.getDefault())
+                            ?.trim()
 
-            try {
-                recognizer.cancel()
-                recognizer.startListening(recognizerIntent)
-            } catch (_: Exception) {
-                retryListening()
+                    if (!text.isNullOrEmpty()) {
+                        processVoice(text)
+                    } else {
+                        restartListening()
+                    }
+                }
+
+                override fun onPartialResults(
+                    partialResults: Bundle?
+                ) {
+                    // Deliberately ignored.
+                }
+
+                override fun onEvent(
+                    eventType: Int,
+                    params: Bundle?
+                ) {
+                }
             }
-
-        }, 400)
+        )
     }
 
-    private fun startCommandListening() {
+    private fun startListening() {
 
         if (destroyed) return
-
-        commandMode = true
 
         handler.postDelayed({
 
             if (destroyed) return@postDelayed
 
             try {
-                recognizer.cancel()
-                recognizer.startListening(recognizerIntent)
+
+                val intent =
+                    Intent(
+                        RecognizerIntent.ACTION_RECOGNIZE_SPEECH
+                    ).apply {
+
+                        putExtra(
+                            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                        )
+
+                        putExtra(
+                            RecognizerIntent.EXTRA_LANGUAGE,
+                            Locale.UK
+                        )
+
+                        putExtra(
+                            RecognizerIntent.EXTRA_MAX_RESULTS,
+                            1
+                        )
+
+                        putExtra(
+                            RecognizerIntent.EXTRA_PARTIAL_RESULTS,
+                            false
+                        )
+                    }
+
+                speechRecognizer?.cancel()
+                speechRecognizer?.startListening(intent)
+
             } catch (_: Exception) {
-                retryListening()
+
+                restartListening()
             }
 
         }, 500)
     }
 
-    override fun onResults(results: Bundle?) {
+    private fun restartListening() {
 
         if (destroyed) return
 
-        val matches =
-            results?.getStringArrayList(
-                SpeechRecognizer.RESULTS_RECOGNITION
-            )
+        handler.postDelayed({
 
-        val spoken =
-            matches?.firstOrNull()
-                ?.lowercase(Locale.getDefault())
-                ?.trim()
+            if (!destroyed) {
+                startListening()
+            }
 
-        if (spoken.isNullOrBlank()) {
-            startStandby()
-            return
-        }
-
-        processSpeech(spoken)
+        }, 1000)
     }
 
-    private fun processSpeech(spoken: String) {
+    private fun processVoice(
+        text: String
+    ) {
 
-        if (!commandMode) {
+        if (!listeningForCommand) {
 
-            if (containsWakeWord(spoken)) {
+            if (text.contains("jarvis") ||
+                text.contains("javis")
+            ) {
 
-                commandMode = true
+                listeningForCommand = true
 
                 speak(
-                    "Yes, sir?",
-                    listenAfterSpeech = true
+                    "Yes, sir?"
                 )
+
+                handler.postDelayed({
+
+                    if (!destroyed) {
+                        startListening()
+                    }
+
+                }, 1600)
+
             } else {
-                startStandby()
+
+                restartListening()
             }
 
             return
         }
 
-        commandMode = false
+        listeningForCommand = false
 
         when {
 
-            spoken.contains("stop listening") ||
-            spoken.contains("go to sleep") -> {
-
-                speak(
-                    "Standing by, sir.",
-                    listenAfterSpeech = false
-                )
-            }
-
-            spoken.contains("what time") ||
-            spoken.contains("current time") -> {
+            text.contains("what time") -> {
 
                 val time =
-                    SimpleDateFormat(
+                    java.text.SimpleDateFormat(
                         "h:mm a",
                         Locale.UK
-                    ).format(Date())
+                    ).format(
+                        java.util.Date()
+                    )
 
                 speak(
-                    "The time is $time, sir.",
-                    listenAfterSpeech = false
+                    "The time is $time, sir."
                 )
             }
 
-            spoken.contains("open youtube") -> {
+            text.contains("open youtube") -> {
 
-                openApplication(
+                openApp(
                     "com.google.android.youtube",
-                    "YouTube",
-                    "Opening YouTube, sir."
+                    "YouTube"
                 )
             }
 
-            spoken.contains("open spotify") -> {
+            text.contains("open spotify") -> {
 
-                openApplication(
+                openApp(
                     "com.spotify.music",
-                    "Spotify",
-                    "Opening Spotify, sir."
+                    "Spotify"
                 )
             }
 
-            spoken.contains("hello") ||
-            spoken.contains("hi jarvis") -> {
+            text.contains("hello") -> {
 
                 speak(
-                    "Good day, sir. How may I assist you?",
-                    listenAfterSpeech = false
+                    "Good day, sir."
+                )
+            }
+
+            text.contains("stop listening") ||
+            text.contains("go to sleep") -> {
+
+                speak(
+                    "Standing by, sir."
                 )
             }
 
             else -> {
 
                 speak(
-                    "Command received, sir.",
-                    listenAfterSpeech = false
+                    "Command received, sir."
                 )
             }
         }
+
+        handler.postDelayed({
+
+            if (!destroyed) {
+                startListening()
+            }
+
+        }, 2500)
     }
 
-    private fun containsWakeWord(
-        spoken: String
-    ): Boolean {
-
-        return spoken.contains("jarvis") ||
-               spoken.contains("jarvis") ||
-               spoken.contains("javis") ||
-               spoken.contains("jarvis")
-    }
-
-    private fun openApplication(
-        packageName: String,
-        applicationName: String,
-        successMessage: String
+    private fun speak(
+        message: String
     ) {
 
-        val launchIntent =
+        textToSpeech?.speak(
+            message,
+            TextToSpeech.QUEUE_FLUSH,
+            null,
+            "JARVIS"
+        )
+    }
+
+    private fun openApp(
+        packageName: String,
+        name: String
+    ) {
+
+        val intent =
             packageManager.getLaunchIntentForPackage(
                 packageName
             )
 
-        if (launchIntent != null) {
+        if (intent != null) {
 
-            launchIntent.addFlags(
+            intent.addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK
             )
 
-            startActivity(launchIntent)
+            startActivity(intent)
 
             speak(
-                successMessage,
-                listenAfterSpeech = false
+                "Opening $name, sir."
             )
 
         } else {
 
             speak(
-                "$applicationName is not installed, sir.",
-                listenAfterSpeech = false
+                "$name is not installed, sir."
             )
         }
     }
 
-    private fun speak(
-        text: String,
-        listenAfterSpeech: Boolean
-    ) {
+    private fun createNotificationChannel() {
 
-        if (destroyed) return
+        if (Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.O
+        ) {
 
-        speaking = true
+            val channel =
+                NotificationChannel(
+                    "jarvis",
+                    "JARVIS Voice",
+                    NotificationManager.IMPORTANCE_LOW
+                )
 
-        tts.speak(
-            text,
-            TextToSpeech.QUEUE_FLUSH,
-            null,
-            "JARVIS_RESPONSE"
-        )
+            channel.description =
+                "JARVIS voice activation"
 
-        handler.postDelayed({
+            val manager =
+                getSystemService(
+                    NotificationManager::class.java
+                )
 
-            if (destroyed) return@postDelayed
+            manager.createNotificationChannel(
+                channel
+            )
+        }
+    }
 
-            speaking = false
+    private fun startJarvisForeground() {
 
-            if (listenAfterSpeech) {
-                startCommandListening()
+        val notification =
+            if (Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.O
+            ) {
+
+                Notification.Builder(
+                    this,
+                    "jarvis"
+                )
+                    .setContentTitle("JARVIS")
+                    .setContentText(
+                        "Voice activation active"
+                    )
+                    .setSmallIcon(
+                        android.R.drawable.ic_btn_speak_now
+                    )
+                    .setOngoing(true)
+                    .build()
+
             } else {
-                startStandby()
+
+                Notification.Builder(this)
+                    .setContentTitle("JARVIS")
+                    .setContentText(
+                        "Voice activation active"
+                    )
+                    .setSmallIcon(
+                        android.R.drawable.ic_btn_speak_now
+                    )
+                    .setOngoing(true)
+                    .build()
             }
 
-        }, calculateSpeechDelay(text))
-    }
+        if (Build.VERSION.SDK_INT >= 29) {
 
-    private fun calculateSpeechDelay(
-        text: String
-    ): Long {
+            startForeground(
+                1001,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            )
 
-        val estimated =
-            700L + text.length * 45L
+        } else {
 
-        return estimated.coerceIn(
-            1500L,
-            6000L
-        )
-    }
-
-    private fun retryListening() {
-
-        if (destroyed || speaking) return
-
-        handler.postDelayed({
-
-            if (!destroyed && !speaking) {
-                startStandby()
-            }
-
-        }, 1200)
-    }
-
-    override fun onError(error: Int) {
-
-        if (destroyed || speaking) return
-
-        retryListening()
-    }
-
-    override fun onReadyForSpeech(
-        params: Bundle?
-    ) {
-        updateHud(true)
-    }
-
-    override fun onBeginningOfSpeech() {
-        updateHud(true)
-    }
-
-    override fun onEndOfSpeech() {
-        updateHud(false)
-    }
-
-    override fun onRmsChanged(
-        rmsdB: Float
-    ) {
-        // Audio level available here
-        // for future HUD animation.
-    }
-
-    override fun onBufferReceived(
-        buffer: ByteArray?
-    ) {
-    }
-
-    override fun onEvent(
-        eventType: Int,
-        params: Bundle?
-    ) {
-    }
-
-    private fun updateHud(
-        listening: Boolean
-    ) {
-
-        // MainActivity can later receive
-        // this state through a shared state
-        // mechanism for the animated HUD.
+            startForeground(
+                1001,
+                notification
+            )
+        }
     }
 
     override fun onDestroy() {
@@ -379,17 +407,13 @@ class JarvisVoiceService : Service(), RecognitionListener {
 
         handler.removeCallbacksAndMessages(null)
 
-        try {
-            recognizer.cancel()
-            recognizer.destroy()
-        } catch (_: Exception) {
-        }
+        speechRecognizer?.cancel()
+        speechRecognizer?.destroy()
+        speechRecognizer = null
 
-        try {
-            tts.stop()
-            tts.shutdown()
-        } catch (_: Exception) {
-        }
+        textToSpeech?.stop()
+        textToSpeech?.shutdown()
+        textToSpeech = null
 
         super.onDestroy()
     }
@@ -398,63 +422,5 @@ class JarvisVoiceService : Service(), RecognitionListener {
         intent: Intent?
     ): IBinder? {
         return null
-    }
-
-    private fun createNotificationChannel() {
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-
-            val channel = NotificationChannel(
-                "jarvis_voice",
-                "JARVIS Voice",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description =
-                    "JARVIS voice activation"
-            }
-
-            val manager =
-                getSystemService(
-                    NotificationManager::class.java
-                )
-
-            manager.createNotificationChannel(channel)
-        }
-    }
-
-    private fun createNotification(): Notification {
-
-        return if (
-            Build.VERSION.SDK_INT >=
-            Build.VERSION_CODES.O
-        ) {
-
-            Notification.Builder(
-                this,
-                "jarvis_voice"
-            )
-                .setContentTitle("JARVIS")
-                .setContentText(
-                    "Voice activation is active"
-                )
-                .setSmallIcon(
-                    android.R.drawable.ic_btn_speak_now
-                )
-                .setOngoing(true)
-                .build()
-
-        } else {
-
-            Notification.Builder(this)
-                .setContentTitle("JARVIS")
-                .setContentText(
-                    "Voice activation is active"
-                )
-                .setSmallIcon(
-                    android.R.drawable.ic_btn_speak_now
-                )
-                .setOngoing(true)
-                .build()
-        }
     }
 }

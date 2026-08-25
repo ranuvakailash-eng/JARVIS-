@@ -15,6 +15,8 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class JarvisVoiceService : Service() {
@@ -33,8 +35,8 @@ class JarvisVoiceService : Service() {
         createNotificationChannel()
         startJarvisForeground()
 
-        textToSpeech = TextToSpeech(this) {
-            if (it == TextToSpeech.SUCCESS) {
+        textToSpeech = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
                 textToSpeech?.language = Locale.UK
                 textToSpeech?.setSpeechRate(0.9f)
             }
@@ -54,48 +56,34 @@ class JarvisVoiceService : Service() {
         speechRecognizer?.setRecognitionListener(
             object : RecognitionListener {
 
-                override fun onReadyForSpeech(
-                    params: Bundle?
-                ) {
-                }
+                override fun onReadyForSpeech(params: Bundle?) {}
 
-                override fun onBeginningOfSpeech() {
-                }
+                override fun onBeginningOfSpeech() {}
 
-                override fun onRmsChanged(
-                    rmsdB: Float
-                ) {
-                }
+                override fun onRmsChanged(rmsdB: Float) {}
 
-                override fun onBufferReceived(
-                    buffer: ByteArray?
-                ) {
-                }
+                override fun onBufferReceived(buffer: ByteArray?) {}
 
-                override fun onEndOfSpeech() {
-                }
+                override fun onEndOfSpeech() {}
 
-                override fun onError(
-                    error: Int
-                ) {
+                override fun onError(error: Int) {
                     if (!destroyed) {
                         restartListening()
                     }
                 }
 
-                override fun onResults(
-                    results: Bundle?
-                ) {
+                override fun onResults(results: Bundle?) {
 
                     if (destroyed) return
 
-                    val list =
+                    val resultsList =
                         results?.getStringArrayList(
                             SpeechRecognizer.RESULTS_RECOGNITION
                         )
 
                     val text =
-                        list?.firstOrNull()
+                        resultsList
+                            ?.firstOrNull()
                             ?.lowercase(Locale.getDefault())
                             ?.trim()
 
@@ -108,15 +96,12 @@ class JarvisVoiceService : Service() {
 
                 override fun onPartialResults(
                     partialResults: Bundle?
-                ) {
-                    // Deliberately ignored.
-                }
+                ) {}
 
                 override fun onEvent(
                     eventType: Int,
                     params: Bundle?
-                ) {
-                }
+                ) {}
             }
         )
     }
@@ -141,9 +126,10 @@ class JarvisVoiceService : Service() {
                             RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
                         )
 
+                        // FIXED:
                         putExtra(
                             RecognizerIntent.EXTRA_LANGUAGE,
-                            Locale.UK
+                            Locale.UK.toLanguageTag()
                         )
 
                         putExtra(
@@ -161,7 +147,6 @@ class JarvisVoiceService : Service() {
                 speechRecognizer?.startListening(intent)
 
             } catch (_: Exception) {
-
                 restartListening()
             }
 
@@ -181,21 +166,18 @@ class JarvisVoiceService : Service() {
         }, 1000)
     }
 
-    private fun processVoice(
-        text: String
-    ) {
+    private fun processVoice(text: String) {
 
         if (!listeningForCommand) {
 
-            if (text.contains("jarvis") ||
+            if (
+                text.contains("jarvis") ||
                 text.contains("javis")
             ) {
 
                 listeningForCommand = true
 
-                speak(
-                    "Yes, sir?"
-                )
+                speak("Yes, sir?")
 
                 handler.postDelayed({
 
@@ -220,16 +202,12 @@ class JarvisVoiceService : Service() {
             text.contains("what time") -> {
 
                 val time =
-                    java.text.SimpleDateFormat(
+                    SimpleDateFormat(
                         "h:mm a",
                         Locale.UK
-                    ).format(
-                        java.util.Date()
-                    )
+                    ).format(Date())
 
-                speak(
-                    "The time is $time, sir."
-                )
+                speak("The time is $time, sir.")
             }
 
             text.contains("open youtube") -> {
@@ -250,24 +228,19 @@ class JarvisVoiceService : Service() {
 
             text.contains("hello") -> {
 
-                speak(
-                    "Good day, sir."
-                )
+                speak("Good day, sir.")
             }
 
             text.contains("stop listening") ||
             text.contains("go to sleep") -> {
 
-                speak(
-                    "Standing by, sir."
-                )
+                speak("Standing by, sir.")
+                return
             }
 
             else -> {
 
-                speak(
-                    "Command received, sir."
-                )
+                speak("Command received, sir.")
             }
         }
 
@@ -280,9 +253,7 @@ class JarvisVoiceService : Service() {
         }, 2500)
     }
 
-    private fun speak(
-        message: String
-    ) {
+    private fun speak(message: String) {
 
         textToSpeech?.speak(
             message,
@@ -297,43 +268,36 @@ class JarvisVoiceService : Service() {
         name: String
     ) {
 
-        val intent =
+        val launchIntent =
             packageManager.getLaunchIntentForPackage(
                 packageName
             )
 
-        if (intent != null) {
+        if (launchIntent != null) {
 
-            intent.addFlags(
+            launchIntent.addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK
             )
 
-            startActivity(intent)
+            startActivity(launchIntent)
 
-            speak(
-                "Opening $name, sir."
-            )
+            speak("Opening $name, sir.")
 
         } else {
 
-            speak(
-                "$name is not installed, sir."
-            )
+            speak("$name is not installed, sir.")
         }
     }
 
     private fun createNotificationChannel() {
 
-        if (Build.VERSION.SDK_INT >=
-            Build.VERSION_CODES.O
-        ) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
 
-            val channel =
-                NotificationChannel(
-                    "jarvis",
-                    "JARVIS Voice",
-                    NotificationManager.IMPORTANCE_LOW
-                )
+            val channel = NotificationChannel(
+                "jarvis",
+                "JARVIS Voice",
+                NotificationManager.IMPORTANCE_LOW
+            )
 
             channel.description =
                 "JARVIS voice activation"
@@ -343,18 +307,14 @@ class JarvisVoiceService : Service() {
                     NotificationManager::class.java
                 )
 
-            manager.createNotificationChannel(
-                channel
-            )
+            manager.createNotificationChannel(channel)
         }
     }
 
     private fun startJarvisForeground() {
 
         val notification =
-            if (Build.VERSION.SDK_INT >=
-                Build.VERSION_CODES.O
-            ) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
 
                 Notification.Builder(
                     this,
@@ -384,7 +344,7 @@ class JarvisVoiceService : Service() {
                     .build()
             }
 
-        if (Build.VERSION.SDK_INT >= 29) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
 
             startForeground(
                 1001,
@@ -418,9 +378,7 @@ class JarvisVoiceService : Service() {
         super.onDestroy()
     }
 
-    override fun onBind(
-        intent: Intent?
-    ): IBinder? {
+    override fun onBind(intent: Intent?): IBinder? {
         return null
     }
 }

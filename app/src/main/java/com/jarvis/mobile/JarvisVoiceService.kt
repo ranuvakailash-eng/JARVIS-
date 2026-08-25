@@ -1,10 +1,13 @@
 package com.jarvis.mobile
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -14,6 +17,8 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class JarvisVoiceService : Service() {
@@ -21,8 +26,7 @@ class JarvisVoiceService : Service() {
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
 
-    private val handler =
-        Handler(Looper.getMainLooper())
+    private val handler = Handler(Looper.getMainLooper())
 
     private var destroyed = false
     private var waitingForCommand = false
@@ -33,21 +37,38 @@ class JarvisVoiceService : Service() {
 
         createNotificationChannel()
 
-        startForeground(
-            NOTIFICATION_ID,
-            createNotification()
-        )
+        // IMPORTANT for Android 14+
+        startJarvisForeground()
 
         setupTts()
-
         setupRecognizer()
 
-        handler.postDelayed(
-            {
+        handler.postDelayed({
+            if (!destroyed) {
                 startListening()
-            },
-            1000
-        )
+            }
+        }, 1000)
+    }
+
+    private fun startJarvisForeground() {
+
+        val notification = createNotification()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            )
+
+        } else {
+
+            startForeground(
+                NOTIFICATION_ID,
+                notification
+            )
+        }
     }
 
     private fun setupTts() {
@@ -58,7 +79,15 @@ class JarvisVoiceService : Service() {
 
             if (status == TextToSpeech.SUCCESS) {
 
-                tts?.language = Locale.UK
+                val result =
+                    tts?.setLanguage(Locale.UK)
+
+                if (
+                    result == TextToSpeech.LANG_MISSING_DATA ||
+                    result == TextToSpeech.LANG_NOT_SUPPORTED
+                ) {
+                    tts?.language = Locale.US
+                }
 
                 tts?.setSpeechRate(0.9f)
             }
@@ -67,8 +96,20 @@ class JarvisVoiceService : Service() {
 
     private fun setupRecognizer() {
 
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            speak("Speech recognition is unavailable, sir.")
+        if (
+            checkSelfPermission(
+                Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        if (
+            !SpeechRecognizer.isRecognitionAvailable(this)
+        ) {
+            speak(
+                "Speech recognition is unavailable, sir."
+            )
             return
         }
 
@@ -118,26 +159,28 @@ class JarvisVoiceService : Service() {
 
                     listening = false
 
-                    if (destroyed) return
-
-                    val resultsList =
-                        results?.getStringArrayList(
-                            SpeechRecognizer.RESULTS_RECOGNITION
-                        )
+                    if (destroyed) {
+                        return
+                    }
 
                     val text =
-                        resultsList
+                        results
+                            ?.getStringArrayList(
+                                SpeechRecognizer.RESULTS_RECOGNITION
+                            )
                             ?.firstOrNull()
-                            ?.lowercase(Locale.getDefault())
+                            ?.lowercase(
+                                Locale.getDefault()
+                            )
                             ?.trim()
 
-                    if (!text.isNullOrEmpty()) {
+                    if (text.isNullOrEmpty()) {
 
-                        processVoice(text)
+                        restartListening()
 
                     } else {
 
-                        restartListening()
+                        processVoice(text)
                     }
                 }
 
@@ -157,9 +200,18 @@ class JarvisVoiceService : Service() {
 
     private fun startListening() {
 
-        if (destroyed ||
+        if (
+            destroyed ||
             recognizer == null ||
             listening
+        ) {
+            return
+        }
+
+        if (
+            checkSelfPermission(
+                Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED
         ) {
             return
         }
@@ -180,7 +232,12 @@ class JarvisVoiceService : Service() {
 
                     putExtra(
                         RecognizerIntent.EXTRA_LANGUAGE,
-                        Locale.UK
+                        Locale.UK.toLanguageTag()
+                    )
+
+                    putExtra(
+                        RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE,
+                        Locale.UK.toLanguageTag()
                     )
 
                     putExtra(
@@ -192,34 +249,48 @@ class JarvisVoiceService : Service() {
                         RecognizerIntent.EXTRA_PARTIAL_RESULTS,
                         false
                     )
+
+                    putExtra(
+                        RecognizerIntent.EXTRA_CALLING_PACKAGE,
+                        packageName
+                    )
                 }
 
             recognizer?.startListening(intent)
 
+        } catch (_: SecurityException) {
+
+            listening = false
+
         } catch (_: Exception) {
 
+            listening = false
             restartListening()
         }
     }
 
     private fun restartListening() {
 
-        if (destroyed) return
+        if (destroyed) {
+            return
+        }
 
         handler.removeCallbacksAndMessages(null)
 
-        handler.postDelayed(
-            {
-                if (!destroyed) {
-                    startListening()
-                }
-            },
-            1200
-        )
+        handler.postDelayed({
+
+            if (!destroyed) {
+                startListening()
+            }
+
+        }, 1200)
     }
 
-    private fun processVoice(text: String) {
+    private fun processVoice(
+        text: String
+    ) {
 
+        // Waiting for "JARVIS"
         if (!waitingForCommand) {
 
             if (
@@ -229,16 +300,17 @@ class JarvisVoiceService : Service() {
 
                 waitingForCommand = true
 
-                speak("Yes, sir.")
-
-                handler.postDelayed(
-                    {
-                        if (!destroyed) {
-                            startListening()
-                        }
-                    },
-                    1300
+                speak(
+                    "Yes, sir."
                 )
+
+                handler.postDelayed({
+
+                    if (!destroyed) {
+                        startListening()
+                    }
+
+                }, 1600)
 
             } else {
 
@@ -254,18 +326,21 @@ class JarvisVoiceService : Service() {
 
             text.contains("hello") -> {
 
-                speak("Good day, sir.")
+                speak(
+                    "Good day, sir."
+                )
             }
 
             text.contains("what time") ||
-            text.contains("time") -> {
+            text == "time" ||
+            text.contains("current time") -> {
 
                 val time =
-                    java.text.SimpleDateFormat(
+                    SimpleDateFormat(
                         "h:mm a",
                         Locale.UK
                     ).format(
-                        java.util.Date()
+                        Date()
                     )
 
                 speak(
@@ -289,6 +364,20 @@ class JarvisVoiceService : Service() {
                 )
             }
 
+            text.contains("stop listening") ||
+            text.contains("go to sleep") -> {
+
+                speak(
+                    "Standing by, sir."
+                )
+
+                handler.removeCallbacksAndMessages(
+                    null
+                )
+
+                return
+            }
+
             else -> {
 
                 speak(
@@ -297,19 +386,22 @@ class JarvisVoiceService : Service() {
             }
         }
 
-        handler.postDelayed(
-            {
-                if (!destroyed) {
-                    startListening()
-                }
-            },
-            2200
-        )
+        handler.postDelayed({
+
+            if (!destroyed) {
+                startListening()
+            }
+
+        }, 2400)
     }
 
-    private fun speak(message: String) {
+    private fun speak(
+        message: String
+    ) {
 
-        if (destroyed) return
+        if (destroyed) {
+            return
+        }
 
         tts?.speak(
             message,
@@ -335,7 +427,9 @@ class JarvisVoiceService : Service() {
                 Intent.FLAG_ACTIVITY_NEW_TASK
             )
 
-            startActivity(launchIntent)
+            startActivity(
+                launchIntent
+            )
 
             speak(
                 "Opening $name, sir."
@@ -351,7 +445,8 @@ class JarvisVoiceService : Service() {
 
     private fun createNotificationChannel() {
 
-        if (Build.VERSION.SDK_INT >=
+        if (
+            Build.VERSION.SDK_INT >=
             Build.VERSION_CODES.O
         ) {
 
@@ -365,12 +460,9 @@ class JarvisVoiceService : Service() {
             channel.description =
                 "JARVIS voice activation"
 
-            val manager =
-                getSystemService(
-                    NotificationManager::class.java
-                )
-
-            manager.createNotificationChannel(
+            getSystemService(
+                NotificationManager::class.java
+            ).createNotificationChannel(
                 channel
             )
         }
@@ -412,11 +504,22 @@ class JarvisVoiceService : Service() {
         }
     }
 
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int
+    ): Int {
+
+        return START_STICKY
+    }
+
     override fun onDestroy() {
 
         destroyed = true
 
-        handler.removeCallbacksAndMessages(null)
+        handler.removeCallbacksAndMessages(
+            null
+        )
 
         recognizer?.cancel()
         recognizer?.destroy()

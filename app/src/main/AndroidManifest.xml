@@ -1,10 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission
-        android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <uses-permission
-        android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
     <uses-permission
         android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
@@ -13,28 +12,26 @@
         android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
-        android:theme="@style/Theme.Jarvis"
-        android:label="JARVIS"
         android:allowBackup="false"
-        android:supportsRtl="true">
+        android:label="JARVIS"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Jarvis">
 
         <activity
             android:name=".MainActivity"
-            android:screenOrientation="portrait"
-            android:exported="true">
+            android:exported="true"
+            android:screenOrientation="portrait">
 
             <intent-filter>
-                <action
-                    android:name="android.intent.action.MAIN" />
-
-                <category
-                    android:name="android.intent.category.LAUNCHER" />
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
         </activity>
 
         <service
             android:name=".JarvisVoiceService"
+            android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="microphone" />
 

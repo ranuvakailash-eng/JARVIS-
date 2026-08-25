@@ -8,41 +8,51 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class JarvisVoiceService : Service(), RecognitionListener {
 
-    private lateinit var speechRecognizer: SpeechRecognizer
-    private lateinit var speechIntent: Intent
+    private lateinit var recognizer: SpeechRecognizer
+    private lateinit var recognizerIntent: Intent
     private lateinit var tts: TextToSpeech
 
     private val handler = Handler(Looper.getMainLooper())
 
     private var commandMode = false
     private var speaking = false
+    private var destroyed = false
 
     override fun onCreate() {
         super.onCreate()
 
         createNotificationChannel()
+
         startForeground(
             1001,
             createNotification()
         )
 
-        tts = TextToSpeech(this) {
-            tts.language = Locale.UK
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts.language = Locale.UK
+                tts.setSpeechRate(0.95f)
+            }
         }
 
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
-        speechRecognizer.setRecognitionListener(this)
+        recognizer =
+            SpeechRecognizer.createSpeechRecognizer(this)
 
-        speechIntent = Intent(
+        recognizer.setRecognitionListener(this)
+
+        recognizerIntent = Intent(
             RecognizerIntent.ACTION_RECOGNIZE_SPEECH
         ).apply {
             putExtra(
@@ -56,61 +66,95 @@ class JarvisVoiceService : Service(), RecognitionListener {
             )
 
             putExtra(
-                RecognizerIntent.EXTRA_PARTIAL_RESULTS,
-                true
-            )
-
-            putExtra(
                 RecognizerIntent.EXTRA_MAX_RESULTS,
                 3
             )
+
+            putExtra(
+                RecognizerIntent.EXTRA_PARTIAL_RESULTS,
+                false
+            )
         }
 
-        startStandbyListening()
+        startStandby()
     }
 
-    private fun startStandbyListening() {
-        if (speaking) return
+    private fun startStandby() {
+
+        if (destroyed || speaking) return
 
         commandMode = false
 
         handler.postDelayed({
+
+            if (destroyed || speaking) return@postDelayed
+
             try {
-                speechRecognizer.cancel()
-                speechRecognizer.startListening(speechIntent)
+                recognizer.cancel()
+                recognizer.startListening(recognizerIntent)
             } catch (_: Exception) {
+                retryListening()
             }
-        }, 300)
+
+        }, 400)
     }
 
     private fun startCommandListening() {
+
+        if (destroyed) return
+
         commandMode = true
 
         handler.postDelayed({
+
+            if (destroyed) return@postDelayed
+
             try {
-                speechRecognizer.cancel()
-                speechRecognizer.startListening(speechIntent)
+                recognizer.cancel()
+                recognizer.startListening(recognizerIntent)
             } catch (_: Exception) {
+                retryListening()
             }
+
         }, 500)
     }
 
-    private fun processSpeech(text: String) {
+    override fun onResults(results: Bundle?) {
 
-        val spoken = text
-            .lowercase(Locale.getDefault())
-            .trim()
+        if (destroyed) return
+
+        val matches =
+            results?.getStringArrayList(
+                SpeechRecognizer.RESULTS_RECOGNITION
+            )
+
+        val spoken =
+            matches?.firstOrNull()
+                ?.lowercase(Locale.getDefault())
+                ?.trim()
+
+        if (spoken.isNullOrBlank()) {
+            startStandby()
+            return
+        }
+
+        processSpeech(spoken)
+    }
+
+    private fun processSpeech(spoken: String) {
 
         if (!commandMode) {
 
-            if (spoken.contains("jarvis")) {
+            if (containsWakeWord(spoken)) {
 
-                speechRecognizer.cancel()
+                commandMode = true
 
                 speak(
                     "Yes, sir?",
-                    true
+                    listenAfterSpeech = true
                 )
+            } else {
+                startStandby()
             }
 
             return
@@ -125,89 +169,112 @@ class JarvisVoiceService : Service(), RecognitionListener {
 
                 speak(
                     "Standing by, sir.",
-                    false
+                    listenAfterSpeech = false
                 )
             }
 
-            spoken.contains("what time") -> {
+            spoken.contains("what time") ||
+            spoken.contains("current time") -> {
 
-                val time = java.text.SimpleDateFormat(
-                    "h:mm a",
-                    Locale.UK
-                ).format(java.util.Date())
+                val time =
+                    SimpleDateFormat(
+                        "h:mm a",
+                        Locale.UK
+                    ).format(Date())
 
                 speak(
                     "The time is $time, sir.",
-                    false
+                    listenAfterSpeech = false
                 )
             }
 
             spoken.contains("open youtube") -> {
 
-                val launchIntent =
-                    packageManager.getLaunchIntentForPackage(
-                        "com.google.android.youtube"
-                    )
-
-                if (launchIntent != null) {
-                    startActivity(
-                        launchIntent.addFlags(
-                            Intent.FLAG_ACTIVITY_NEW_TASK
-                        )
-                    )
-
-                    speak(
-                        "Opening YouTube, sir.",
-                        false
-                    )
-                } else {
-                    speak(
-                        "YouTube is not installed, sir.",
-                        false
-                    )
-                }
+                openApplication(
+                    "com.google.android.youtube",
+                    "YouTube",
+                    "Opening YouTube, sir."
+                )
             }
 
             spoken.contains("open spotify") -> {
 
-                val launchIntent =
-                    packageManager.getLaunchIntentForPackage(
-                        "com.spotify.music"
-                    )
+                openApplication(
+                    "com.spotify.music",
+                    "Spotify",
+                    "Opening Spotify, sir."
+                )
+            }
 
-                if (launchIntent != null) {
-                    startActivity(
-                        launchIntent.addFlags(
-                            Intent.FLAG_ACTIVITY_NEW_TASK
-                        )
-                    )
+            spoken.contains("hello") ||
+            spoken.contains("hi jarvis") -> {
 
-                    speak(
-                        "Opening Spotify, sir.",
-                        false
-                    )
-                } else {
-                    speak(
-                        "Spotify is not installed, sir.",
-                        false
-                    )
-                }
+                speak(
+                    "Good day, sir. How may I assist you?",
+                    listenAfterSpeech = false
+                )
             }
 
             else -> {
 
                 speak(
                     "Command received, sir.",
-                    false
+                    listenAfterSpeech = false
                 )
             }
         }
     }
 
+    private fun containsWakeWord(
+        spoken: String
+    ): Boolean {
+
+        return spoken.contains("jarvis") ||
+               spoken.contains("jarvis") ||
+               spoken.contains("javis") ||
+               spoken.contains("jarvis")
+    }
+
+    private fun openApplication(
+        packageName: String,
+        applicationName: String,
+        successMessage: String
+    ) {
+
+        val launchIntent =
+            packageManager.getLaunchIntentForPackage(
+                packageName
+            )
+
+        if (launchIntent != null) {
+
+            launchIntent.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK
+            )
+
+            startActivity(launchIntent)
+
+            speak(
+                successMessage,
+                listenAfterSpeech = false
+            )
+
+        } else {
+
+            speak(
+                "$applicationName is not installed, sir.",
+                listenAfterSpeech = false
+            )
+        }
+    }
+
     private fun speak(
         text: String,
-        listenAfter: Boolean
+        listenAfterSpeech: Boolean
     ) {
+
+        if (destroyed) return
+
         speaking = true
 
         tts.speak(
@@ -219,72 +286,102 @@ class JarvisVoiceService : Service(), RecognitionListener {
 
         handler.postDelayed({
 
+            if (destroyed) return@postDelayed
+
             speaking = false
 
-            if (listenAfter) {
+            if (listenAfterSpeech) {
                 startCommandListening()
             } else {
-                startStandbyListening()
+                startStandby()
             }
 
-        }, 1500)
+        }, calculateSpeechDelay(text))
     }
 
-    override fun onResults(results: Bundle?) {
+    private fun calculateSpeechDelay(
+        text: String
+    ): Long {
 
-        val matches =
-            results?.getStringArrayList(
-                SpeechRecognizer.RESULTS_RECOGNITION
-            )
+        val estimated =
+            700L + text.length * 45L
 
-        val text =
-            matches?.firstOrNull()
-
-        if (!text.isNullOrBlank()) {
-            processSpeech(text)
-        } else {
-            startStandbyListening()
-        }
+        return estimated.coerceIn(
+            1500L,
+            6000L
+        )
     }
 
-    override fun onPartialResults(partialResults: Bundle?) {
+    private fun retryListening() {
 
-        val matches =
-            partialResults?.getStringArrayList(
-                SpeechRecognizer.RESULTS_RECOGNITION
-            )
+        if (destroyed || speaking) return
 
-        val text =
-            matches?.firstOrNull()
-                ?: return
+        handler.postDelayed({
 
-        processSpeech(text)
+            if (!destroyed && !speaking) {
+                startStandby()
+            }
+
+        }, 1200)
     }
 
     override fun onError(error: Int) {
 
-        if (!speaking) {
-            startStandbyListening()
-        }
+        if (destroyed || speaking) return
+
+        retryListening()
     }
 
-    override fun onReadyForSpeech(params: Bundle?) {}
-    override fun onBeginningOfSpeech() {}
-    override fun onRmsChanged(rmsdB: Float) {}
-    override fun onBufferReceived(buffer: ByteArray?) {}
-    override fun onEndOfSpeech() {}
+    override fun onReadyForSpeech(
+        params: Bundle?
+    ) {
+        updateHud(true)
+    }
+
+    override fun onBeginningOfSpeech() {
+        updateHud(true)
+    }
+
+    override fun onEndOfSpeech() {
+        updateHud(false)
+    }
+
+    override fun onRmsChanged(
+        rmsdB: Float
+    ) {
+        // Audio level available here
+        // for future HUD animation.
+    }
+
+    override fun onBufferReceived(
+        buffer: ByteArray?
+    ) {
+    }
 
     override fun onEvent(
         eventType: Int,
         params: Bundle?
-    ) {}
+    ) {
+    }
+
+    private fun updateHud(
+        listening: Boolean
+    ) {
+
+        // MainActivity can later receive
+        // this state through a shared state
+        // mechanism for the animated HUD.
+    }
 
     override fun onDestroy() {
+
+        destroyed = true
 
         handler.removeCallbacksAndMessages(null)
 
         try {
-            speechRecognizer.destroy()
+            recognizer.cancel()
+            recognizer.destroy()
         } catch (_: Exception) {
         }
 
@@ -297,17 +394,24 @@ class JarvisVoiceService : Service(), RecognitionListener {
         super.onDestroy()
     }
 
-    override fun onBind(intent: Intent?) = null
+    override fun onBind(
+        intent: Intent?
+    ): IBinder? {
+        return null
+    }
 
     private fun createNotificationChannel() {
 
-        if (Build.VERSION.SDK_INT >= 26) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
 
             val channel = NotificationChannel(
                 "jarvis_voice",
                 "JARVIS Voice",
                 NotificationManager.IMPORTANCE_LOW
-            )
+            ).apply {
+                description =
+                    "JARVIS voice activation"
+            }
 
             val manager =
                 getSystemService(
@@ -320,7 +424,10 @@ class JarvisVoiceService : Service(), RecognitionListener {
 
     private fun createNotification(): Notification {
 
-        return if (Build.VERSION.SDK_INT >= 26) {
+        return if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.O
+        ) {
 
             Notification.Builder(
                 this,
@@ -328,7 +435,7 @@ class JarvisVoiceService : Service(), RecognitionListener {
             )
                 .setContentTitle("JARVIS")
                 .setContentText(
-                    "Voice activation is ready"
+                    "Voice activation is active"
                 )
                 .setSmallIcon(
                     android.R.drawable.ic_btn_speak_now
@@ -341,7 +448,7 @@ class JarvisVoiceService : Service(), RecognitionListener {
             Notification.Builder(this)
                 .setContentTitle("JARVIS")
                 .setContentText(
-                    "Voice activation is ready"
+                    "Voice activation is active"
                 )
                 .setSmallIcon(
                     android.R.drawable.ic_btn_speak_now
